@@ -1,0 +1,229 @@
+% Script to run simulation to test feasibility of uncertainty
+% quantification for fitting dMRI models to normalised data.
+
+clear;
+project_folder = pwd;
+
+
+%% Define signal model and noise
+
+model_name = 'ADC';
+
+% Parameter ranges
+switch model_name
+
+    case 'ADC'
+
+        % Parameters: [ADC] um^2/ms
+        Xmin = [0];
+        Xmax = [3]; 
+
+end
+
+% T2
+T2 = 100;
+
+% Noise standard deviation (as fraction of b=0 TE=0 signal)
+noise_std = 0.05;
+
+
+%% Scheme
+
+schemename = 'Fast';
+
+% Load scheme
+scheme = load(fullfile(project_folder, 'Simulation Feasibility Study', 'Schemes', [schemename '.mat'])).scheme;
+nscheme = length(scheme);
+
+
+%% Simulation
+
+
+% Randomise parameter value
+model_params = [1];
+
+
+%% Simulate noisy signals across sequences
+
+% Generate distributions
+SequenceDists = calculateSequenceDists( ...
+    model_name,...
+    model_params,...
+    scheme,...
+    T2=T2,...
+    noise_std = noise_std...
+    );
+
+
+% Sample distributions
+norm_signals = zeros(nscheme, 1);
+
+for schmindx = 1:nscheme
+
+    b0dist = SequenceDists(schmindx).b0dist;
+    b0signal = random(b0dist, 1);
+
+    bdist = SequenceDists(schmindx).bdist;
+    bsignal = random(bdist, 1);
+
+    norm_signals(schmindx) = bsignal/b0signal;
+
+end
+
+
+
+
+
+%% Find GROUND TRUTH likelihood distribution of parameters (given this set of noisy signals)
+
+% signal resolution
+sig_res = 0.005;
+
+params = 0.5:0.002:1.5; % ADC values
+
+ParamLikelihoods = zeros(length(params), 1);
+
+
+for paramindx = 1:length(params)
+
+    this_param = params(paramindx);
+
+    this_model_params = [this_param]; % NEED TO CHANGE THIS FOR OTHER MODELS
+
+    thisSequenceDists = calculateSequenceDists( ...
+                            model_name,...
+                            this_model_params,...
+                            scheme,...
+                            T2=T2,...
+                            noise_std = noise_std...
+                            );
+
+
+    % Find probability of each normalised signal
+
+    sequence_likelihoods = zeros(nscheme, 1);
+
+    for schmindx = 1:nscheme
+
+        norm_sig = norm_signals(schmindx);
+
+        b0dist = thisSequenceDists(schmindx).b0dist;
+        bdist = thisSequenceDists(schmindx).bdist;
+
+
+        b0signals = 0:sig_res:1;
+        Nb0sig = length(b0signals);
+        likelihoods = zeros(Nb0sig, 1);
+
+        for b0sigindx = 1:Nb0sig
+
+            b0sig = b0signals(b0sigindx);
+            bsig = norm_sig*b0sig;
+
+            b0_pd = pdf(b0dist, b0sig);
+            b_pd = pdf(bdist, bsig);
+
+            likelihoods(b0sigindx) = b_pd*b0_pd;
+
+        end
+
+        sequence_likelihoods(schmindx)= sum(likelihoods);
+
+       
+    end
+
+    ParamLikelihoods(paramindx) = prod(sequence_likelihoods);
+
+end
+
+
+figure
+plot(params, ParamLikelihoods);
+
+
+[~, Imax] = max(ParamLikelihoods);
+param_max = params(Imax)
+
+param_var = sum((params'.^2).*ParamLikelihoods)/sum(ParamLikelihoods) - (sum((params').*ParamLikelihoods)/sum(ParamLikelihoods))^2;
+param_std = sqrt(param_var)
+
+
+
+
+%% Estimate likelihood distribution using X method
+
+
+% e.g. First-order propagation
+
+fit_scheme = scheme;
+fit_scheme(nscheme+1).bval=0;
+
+
+
+
+
+
+%% Function for generating sequence distributions
+
+function SequenceDists = calculateSequenceDists(model_name, model_params, scheme, opts)
+
+    arguments
+        model_name % Name of dMRI signal model
+        model_params % Parameter values for model (in order specified in dMRI_model)
+        scheme % sequence parameters
+
+        opts.T2 % T2 value
+        opts.noise_std % Noise standard deviation (as fraction of TE=0 b=0 signal)
+    
+    end
+
+    nscheme = length(scheme);
+    T2 = opts.T2;
+    noise_std = opts.noise_std;
+
+
+    % Generate distributions for each sequence
+    SequenceDists = struct();
+    
+    for schmindx = 1:nscheme
+    
+        delta = scheme(schmindx).delta;
+        DELTA = scheme(schmindx).DELTA;
+        bval = scheme(schmindx).bval;
+        TE = scheme(schmindx).TE;
+        N0 = scheme(schmindx).N0;
+        Nb = scheme(schmindx).Nb*N0;
+    
+    
+        % == b=0 signal distribution
+    
+        % Noise-free
+        b0signal = exp(-TE/T2);
+    
+        % Standard deviation
+        b0std = noise_std/sqrt(N0);
+    
+        b0dist = makedist('Rician', s=b0signal, sigma = b0std );
+    
+    
+        % == b>0 signal distribution
+    
+        % Noise-free 
+        bsignal = b0signal*dMRI_model(model_name, model_params, [bval, delta, DELTA]);
+    
+        % Standard deviation
+        bstd = noise_std/sqrt(Nb);
+    
+        bdist = makedist('Rician', s=bsignal, sigma = bstd );
+    
+    
+        SequenceDists(schmindx).('b0dist') = b0dist;
+        SequenceDists(schmindx).('bdist') = bdist;
+     
+    
+    end
+
+
+end
+
+
