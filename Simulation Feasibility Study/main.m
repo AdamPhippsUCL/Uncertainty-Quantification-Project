@@ -24,22 +24,22 @@ switch model_name
         % Need to try and implement this (both for fixed and unfixed
         % radius).
 
-        % Parameters [fIC, fEES, R, dIC, dEES]
-        Xmin = [0, 0, 5, 2, 2];
-        Xmax = [1, 1, 10, 2, 2];
+        % Parameters [fIC, R, dIC, dEES]
+        Xmin = [0, 0, 8, 2, 2];
+        Xmax = [1, 1, 8, 2, 2];
 
 
 end
 
 
 % Parameter values
-model_params = [0.5, 0.5, 8, 2, 2];
+model_params = [0.25, 0.75, 8, 2, 2];
 
 % T2
-T2 = 50;
+T2 = 70;
 
 % Noise standard deviation (as fraction of b=0 TE=0 signal)
-noise_std = 0.03;
+noise_std = 0.04;
 
 
 %% Scheme
@@ -53,6 +53,11 @@ nscheme = length(scheme);
 
 
 %% Simluation
+
+
+% Parameter Number (which parameter we are considering estimates and
+% uncertainty for)
+ParamNum = 1;
 
 % Number of noisy signals
 Nrep = 10;
@@ -69,7 +74,6 @@ param_val_diffs = zeros(Nrep, 1);
 param_std_diffs = zeros(Nrep, 1);
 
 for repindx = 1:Nrep
-
 
 
     %% Simulate noisy signals across sequences
@@ -104,7 +108,6 @@ for repindx = 1:Nrep
     
     
     
-    
     %% Find GROUND TRUTH likelihood distribution of parameters (given this set of noisy signals)
     
     % signal resolution
@@ -112,75 +115,148 @@ for repindx = 1:Nrep
     
     % !! Set parameter number and specify ranges base on this
 
-    params = 0.5:0.002:1.5; % ADC values
-
-    % Need to integrate over other model parameters...
+    % Parameter of interest
+    % params = 0.5:0.002:1.5; % ADC values
+    params = linspace(Xmin(ParamNum), Xmax(ParamNum), 501);
     
     ParamLikelihoods = zeros(length(params), 1);
+
+
+    % === Other parameters (for integrating over)
+    OtherFreeParamBools = (Xmin~=Xmax);
+    OtherFreeParamBools(ParamNum)=0;
+
+    switch model_name
+        case 'VERDICT - 2 compartment'
+            OtherFreeParamBools(2) = 0; % fEES depends on fIC
+    end
     
-    
+    OtherParamNums = find(OtherFreeParamBools);
+    Nother = length(OtherParamNums);
+
+    if Nother>0
+        Nothergrid = 11; % Number of grid points for other parameters    
+        % OtherParamVals = zeros(Nother, Nothergrid);
+        OtherParamVals = cell(1, Nother);
+        indx = 0;
+        for otherparamnum = OtherParamNums  
+            indx = indx+1;
+            % OtherParamVals(indx,:) = linspace(Xmin(otherparamnum), Xmax(otherparamnum), Nothergrid); 
+            OtherParamVals{indx} = linspace(Xmin(otherparamnum), Xmax(otherparamnum), Nothergrid)';
+        end
+
+
+    switch Nother
+        case 1
+            OtherParamGrid = OtherParamVals{1};
+        case 2
+            [Param1Grid, Param2Grid] = ndgrid(OtherParamVals{1}, OtherParamVals{2});
+            OtherParamGrid = cat(3, Param1Grid, Param2Grid);
+            OtherParamGrid = reshape(OtherParamGrid, Nothergrid*Nothergrid ,2);
+        case 3
+            error('Not coded for three yet! Too lazy to generalise atm...')
+    end
+
+    else
+        OtherParamGrid = [];
+
+    end
+
+    if isempty(OtherParamGrid)
+        gridindxs = 1;
+    else
+        gridindxs = 1:size(OtherParamGrid, 1);
+    end
+
+   
+
     for paramindx = 1:length(params)
     
-        this_param = params(paramindx);
+        this_param = params(paramindx); % FOR MULTIPARAMETER MODELS, NEED TO INTEGRATE OVER OTHER PARAMETERS
     
-        this_model_params = [this_param]; % NEED TO CHANGE THIS FOR OTHER MODELS
-    
-        thisSequenceDists = calculateSequenceDists( ...
-                                model_name,...
-                                this_model_params,...
-                                scheme,...
-                                T2=T2,...
-                                noise_std = noise_std...
-                                );
-    
-    
-        % Find probability of each normalised signal
-    
-        sequence_likelihoods = zeros(nscheme, 1);
-    
-        b0signals = 0:sig_res:1;
-        Nb0sig = length(b0signals);
-    
-        for schmindx = 1:nscheme
-    
-            norm_sig = norm_signals(schmindx);
-    
-            b0dist = thisSequenceDists(schmindx).b0dist;
-            bdist = thisSequenceDists(schmindx).bdist;
-    
-            likelihoods = zeros(Nb0sig, 1);
-    
-            for b0sigindx = 1:Nb0sig
-    
-                b0sig = b0signals(b0sigindx);
-                bsig = norm_sig*b0sig;
-    
-                b0_pd = pdf(b0dist, b0sig);
-                b_pd = pdf(bdist, bsig);
-    
-                likelihoods(b0sigindx) = b_pd*b0_pd;
-    
+        SequenceLikelihoods = zeros(nscheme, 1);
+
+        for gridindx = gridindxs
+
+            this_model_params = model_params;
+
+            this_model_params(ParamNum) = this_param;
+
+            switch model_name
+                case 'VERDICT - 2 compartment'
+                    this_model_params(2) = 1-this_model_params(1); % fEES depends on fIC
             end
-    
-            sequence_likelihoods(schmindx)= sum(likelihoods)*sig_res;
-    
-           
+
+            for i = 1:length(OtherParamNums)
+                otherparamnum = OtherParamNums(i);
+                this_model_params(otherparamnum) = OtherParamGrid(gridindx, i);
+            end
+            
+            % this_model_params = [this_param]; % NEED TO CHANGE THIS FOR OTHER MODELS
+        
+            thisSequenceDists = calculateSequenceDists( ...
+                                    model_name,...
+                                    this_model_params,...
+                                    scheme,...
+                                    T2=T2,...
+                                    noise_std = noise_std...
+                                    );
+        
+        
+            % Find probability of each normalised signal
+        
+            % sequence_likelihoods = zeros(nscheme, 1);
+        
+            b0signals = 0:sig_res:1;
+            Nb0sig = length(b0signals);
+        
+            for schmindx = 1:nscheme
+        
+                norm_sig = norm_signals(schmindx);
+        
+                b0dist = thisSequenceDists(schmindx).b0dist;
+                bdist = thisSequenceDists(schmindx).bdist;
+        
+                likelihoods = zeros(Nb0sig, 1);
+        
+                for b0sigindx = 1:Nb0sig
+        
+                    b0sig = b0signals(b0sigindx);
+                    bsig = norm_sig*b0sig;
+        
+                    b0_pd = pdf(b0dist, b0sig);
+                    b_pd = pdf(bdist, bsig);
+        
+                    likelihoods(b0sigindx) = b_pd*b0_pd;
+        
+                end
+        
+                % sequence_likelihoods(schmindx) =  sum(likelihoods)*sig_res;
+                SequenceLikelihoods(schmindx) = SequenceLikelihoods(schmindx) + sum(likelihoods)*sig_res;
+
+            end
+
+
+
+
         end
-    
-        ParamLikelihoods(paramindx) = prod(sequence_likelihoods);
+
+        ParamLikelihoods(paramindx) = prod(SequenceLikelihoods);
     
     end
     
-    clear b0sig bsig b0_pd b_pd
+    clear b0sig bsig b0_pd b_pd Nb0sig b0signals b0sigindx
     clear b0dist bdist
     clear norm_sig
     clear likelihoods sequence_likelihoods
     clear this_param this_model_params thisSequenceDists
     clear schmindx
+    clear Nother OtherParamGrid OtherParamNums otherparamnum OtherParamVals OtherFreeParamBools
+    clear gridindx gridindxs i
     
     % figure
     % plot(params, ParamLikelihoods);
-    
+    % 
     
     [~, Imax] = max(ParamLikelihoods);
     param_max = params(Imax)
@@ -189,7 +265,7 @@ for repindx = 1:Nrep
     param_std_GT = sqrt(param_var)
     
     
-    
+    disp('')
     %% Estimate likelihood distribution using X method
     
     
@@ -203,9 +279,9 @@ for repindx = 1:Nrep
     fit_Y = [norm_signals', 1];
     fit_Y = reshape(fit_Y, [1,1,length(fit_Y)]);
     
-    beta0 = [1];
-    lb = [0];
-    ub = [3];
+    beta0 = model_params;
+    lb = Xmin;
+    ub = Xmax;
     lambda=0;
     fittingtechnique = 'LSQ';
     
@@ -221,7 +297,7 @@ for repindx = 1:Nrep
                 );
     
     
-    ADC_fit = params_fit(1)
+   param_fit = params_fit(ParamNum)
     
     
     
@@ -284,19 +360,20 @@ for repindx = 1:Nrep
     
     % signal_var = diag(noise_std.^2); % Need to improve this given NSA and normalisation!
     params_var =  J*(signals_var*J');
-    params_std_pred = sqrt(diag(params_var))
+    params_std_pred = sqrt(diag(params_var));
+    param_std_pred = params_std_pred(ParamNum)
 
 
     %% Append results
 
-    param_val_diffs(repindx) = ADC_fit-param_max;
+    param_val_diffs(repindx) = param_fit-param_max;
     param_std_diffs(repindx) = params_std_pred(1) - param_std_GT;
 
-    %% Plot results
-    scatter(ax1, repindx, ADC_fit-param_max)
-    hold(ax1,"on");
-    scatter(ax2, repindx, params_std_pred(1) - param_std_GT)
-    hold(ax2, "on")
+    % %% Plot results
+    % scatter(ax1, repindx, ADC_fit-param_max)
+    % hold(ax1,"on");
+    % scatter(ax2, repindx, params_std_pred(1) - param_std_GT)
+    % hold(ax2, "on")
 
 end
 
@@ -397,7 +474,7 @@ function [params, resnorm] = fitting_func(signals, scheme, opts)
 
     Y = reshape(signals, [1,1,1,length(signals)]);
 
-    [outputs{1:Nparam} ] = dMRI_model_fit( ...
+    outputs = dMRI_model_fit( ...
         opts.modelname, ...
         Y, ...
         scheme, ...
@@ -408,6 +485,12 @@ function [params, resnorm] = fitting_func(signals, scheme, opts)
         lambda=opts.lambda,...
         ADClogfit=opts.ADClogfit);
 
-    params = struct2array(cell2mat(outputs));
+    f = fields(outputs);
+    nf = length(f);
+    params = zeros(nf, 1);
+    for indx = 1:nf
+        params(indx) = outputs.(f{indx});
+    end
+
 
 end
