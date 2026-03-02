@@ -1,0 +1,287 @@
+% Script to simulate phantom experiment
+
+clear;
+project_folder = pwd;
+
+
+%% Define phantom
+
+% Number of phantom compartments
+Ncomparts = 41;
+
+% Number of voxels per compartment
+Nvoxel = 500;
+
+% Signal model
+model_name = 'VERDICT - 2 compartment';
+
+% fIC values across compartments
+fIC_comparts = linspace(0.0, 1, Ncomparts);
+
+fEES_comparts = 1-fIC_comparts;
+R=8;
+DIC=2;
+DEES=2;
+
+model_params = [fIC_comparts; fEES_comparts; repmat(R, 1, Ncomparts); repmat(DIC, 1, Ncomparts); repmat(DEES, 1, Ncomparts)];
+
+% T2
+T2s = linspace(100,100,Ncomparts);
+
+
+param_comparts = fIC_comparts;
+
+%% Define imaging
+
+schemename = 'Fast';
+
+% Load scheme
+scheme = load(fullfile(project_folder, 'Simulation Feasibility Study', 'Schemes', [schemename '.mat'])).scheme;
+nscheme = length(scheme);
+
+% noise
+noise_std = 0.05;
+
+
+%% Simulate noisy signals for compartments
+
+CompartmentSignals = ones(Ncomparts, Nvoxel, nscheme+1 );
+
+for cmprtindx = 1:Ncomparts
+
+    cmprt_model_params = model_params(:,cmprtindx);
+
+    T2 = T2s(cmprtindx);
+
+    % Calculate sequence distributions
+    SequenceDists = calculateSequenceDists( ...
+        model_name,...
+        cmprt_model_params,...
+        scheme,...
+        T2=T2,...
+        noise_std = noise_std...
+        );
+
+    for schmindx = 1:nscheme   
+
+        b0dist = SequenceDists(schmindx).b0dist;   
+        bdist = SequenceDists(schmindx).bdist;
+
+        for vxlindx = 1:Nvoxel
+
+            b0signal = random(b0dist, 1);
+            bsignal = random(bdist, 1);
+
+            norm_signal = bsignal/b0signal;
+
+            CompartmentSignals(cmprtindx, vxlindx, schmindx) = norm_signal;
+
+        end
+
+    end
+
+end
+
+
+%% Fit model to simulated phantom signals
+
+fit_scheme = scheme;
+fit_scheme(nscheme+1).bval=0;
+fit_scheme(nscheme+1).delta=1;
+fit_scheme(nscheme+1).DELTA=2;
+
+fit_Y = reshape(CompartmentSignals, [1, size(CompartmentSignals)]);
+
+Xmin = [0, 0, 8, 2, 2];
+Xmax = [1, 1, 8, 2, 2];
+
+beta0 = [0.5, 0.5, 8, 2, 2];
+lb = Xmin;
+ub = Xmax;
+lambda=0;
+fittingtechnique = 'LSQ';
+
+
+outputs = dMRI_model_fit( ...
+        model_name, ...
+        fit_Y, ...
+        fit_scheme, ...
+        fittingtechnique=fittingtechnique,...
+        beta0=beta0,...
+        lb=lb,...
+        ub=ub,...
+        lambda=lambda,...
+        ADClogfit=false);
+
+CompartmentParams = squeeze(outputs.fIC);
+
+% 
+% 
+% [params_fit, ~, ~] = fitting_func( ...
+%             CompartmentSignals, ...
+%             fit_scheme, ...
+%             modelname = model_name, ...
+%             fittingtechnique = fittingtechnique,...
+%             beta0=beta0,...
+%             lb=lb,...
+%             ub=ub,...
+%             lambda=lambda, ...
+%             return_jacobian = false...
+%             );
+
+
+
+%% Test
+
+ParamIndxs = 5:45;
+
+param_std_GTs = [];
+param_std_preds = [];
+param_std_diffs = [];
+
+% Initialise figure
+f1=figure;
+f1.Position  = [286.6 97 916.8 657.6];
+ax1 = axes;
+
+
+% Create color bar
+h = imagesc(ax1, [-10 -9], [-10 -9], linspace(0,1)');
+cmap=colormap(ax1, "parula");
+caxis([0 1])
+cb = colorbar(ax1);
+cb.Ticks = [0, 0.2, 0.4, 0.6, 0.8, 1];
+cb.Label.String = 'fIC';
+cb.FontSize=14;
+set(h, 'Visible','off')
+axis xy
+
+grid on
+
+for this_compart_indx = ParamIndxs
+
+    this_model_params = model_params(:,this_compart_indx);
+    this_param = this_model_params(1);
+    
+    T2 = T2s(this_compart_indx);
+
+    %  === Ground truth
+    param_local_range = 0.02;
+    
+    NumVxls = zeros(Ncomparts,1);
+    
+    % figure
+    
+    for compartindx = 1:Ncomparts
+        numvxls = sum(and( CompartmentParams(compartindx,:) > this_param-param_local_range , CompartmentParams(compartindx,:) < this_param+param_local_range) );
+        NumVxls(compartindx)=numvxls;
+        % scatter(param_comparts(compartindx), numvxls);
+        hold on
+    end
+    
+    % param_mean = (sum((param_comparts').*NumVxls)/sum(NumVxls));
+    
+    param_var = sum((param_comparts'.^2).*NumVxls)/sum(NumVxls) - (sum((param_comparts').*NumVxls)/sum(NumVxls))^2;
+    param_std_GT = sqrt(param_var);
+    param_std_GTs = [param_std_GTs param_std_GT];
+    
+    
+    
+    % === Estimated using Jacobian
+    
+        
+    % Define function for Jacobian calculation
+    func = @(x) fitting_func( ...
+        x,...
+        fit_scheme, ...
+        modelname=model_name,...
+        fittingtechnique=fittingtechnique,...
+        beta0=beta0,...
+        lb=lb,...
+        ub=ub,...
+        lambda=lambda);
+    
+    
+    % Compute signals for compartment model parameters (noise free)
+    s = ones(nscheme+1,1);
+    for schmindx = 1:nscheme
+        delta = scheme(schmindx).delta;
+        DELTA = scheme(schmindx).DELTA;
+        bval = scheme(schmindx).bval;
+        s(schmindx) = dMRI_model(model_name, this_model_params, [bval, delta, DELTA]);
+    end
+    
+    % Define input step and bounds
+    step = 0.01*ones(size(s));
+    xlb = zeros(size(s));
+    xub = ones(size(s));
+    
+    % Estimate Jacobian at signals
+    J = JacobianEst(func, s, step=step, xlb=xlb, xub=xub);
+    
+    
+    % Estimate parameter errors
+    
+    signals_var = zeros(1, nscheme+1);
+    
+    for schmindx = 1:nscheme
+    
+        N0 = scheme(schmindx).N0;
+        Nb = N0*scheme(schmindx).Nb;
+        TE = scheme(schmindx).TE;
+    
+        b0_s = exp(-TE/T2);
+        b_s = b0_s*s(schmindx);
+    
+        b0_std = noise_std/sqrt(N0);
+        b_std = noise_std/sqrt(Nb);
+    
+        norm_sig_var = (b_std^2)/(b0_s^2) + ((b_s^2)/(b0_s^4))*(b0_std^2);
+    
+        signals_var(schmindx) = norm_sig_var;
+     end
+    signals_var = diag(signals_var);
+    
+    
+    % signal_var = diag(noise_std.^2); % Need to improve this given NSA and normalisation!
+    params_var =  J*(signals_var*J');
+    params_std_pred = sqrt(diag(params_var));
+    param_std_pred = params_std_pred(1);
+    param_std_preds = [param_std_preds param_std_pred];
+    
+    % disp('')
+
+    param_std_diffs = [param_std_diffs param_std_pred-param_std_GT];
+
+
+    
+
+    scatter(ax1, ...
+        param_std_GT, ...
+        param_std_pred-param_std_GT, ...
+        80, ...
+        'filled', ...
+        MarkerFaceColor = cmap(round(255*this_param),:), ...
+        MarkerEdgeColor= 'k'...
+        )
+    hold on
+
+end
+    
+
+
+ax1.FontSize = 14;
+xlim([0.0 0.1])
+ylim([-0.05 0.05])
+yticks(-0.04:0.02:0.04)
+xlabel('fIC Uncertainty GT')
+ylabel('fIC Uncertainty Estimated - GT')
+
+% %%
+% 
+% figure
+% 
+% for indx = 1:2:20
+%     histogram(outputs.fIC(1,indx,:))
+%     hold on
+% end

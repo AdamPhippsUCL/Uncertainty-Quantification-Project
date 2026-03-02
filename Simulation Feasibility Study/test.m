@@ -33,18 +33,18 @@ end
 
 
 % Parameter values
-model_params = [0.25, 0.75, 8, 2, 2];
+model_params = [0.5, 0.5, 8, 2, 2];
 
 % T2
-T2 = 70;
+T2 = 60;
 
 % Noise standard deviation (as fraction of b=0 TE=0 signal)
-noise_std = 0.04;
+noise_std = 0.05;
 
 
 %% Scheme
 
-schemename = 'Fast';
+schemename = 'Classic';
 
 % Load scheme
 scheme = load(fullfile(project_folder, 'Simulation Feasibility Study', 'Schemes', [schemename '.mat'])).scheme;
@@ -62,13 +62,13 @@ ParamNum = 1;
 % Number of noisy signals
 Nrep = 10;
 
-% figure for point estimates
-f1 = figure;
-ax1 = axes;
-
-% figure for parameter std estimates
-f2 = figure;
-ax2 = axes;
+% % figure for point estimates
+% f1 = figure;
+% ax1 = axes;
+% 
+% % figure for parameter std estimates
+% f2 = figure;
+% ax2 = axes;
 
 param_val_diffs = zeros(Nrep, 1);
 param_std_diffs = zeros(Nrep, 1);
@@ -254,8 +254,8 @@ for repindx = 1:Nrep
     clear Nother OtherParamGrid OtherParamNums otherparamnum OtherParamVals OtherFreeParamBools
     clear gridindx gridindxs i
     
-    % figure
-    % plot(params, ParamLikelihoods);
+    figure
+    plot(params, ParamLikelihoods);
     % 
     
     [~, Imax] = max(ParamLikelihoods);
@@ -285,7 +285,7 @@ for repindx = 1:Nrep
     lambda=0;
     fittingtechnique = 'LSQ';
     
-    params_fit = fitting_func( ...
+    [params_fit, ~, ~] = fitting_func( ...
                 fit_Y, ...
                 fit_scheme, ...
                 modelname = model_name, ...
@@ -293,7 +293,8 @@ for repindx = 1:Nrep
                 beta0=beta0,...
                 lb=lb,...
                 ub=ub,...
-                lambda=lambda ...
+                lambda=lambda, ...
+                return_jacobian = false...
                 );
     
     
@@ -363,6 +364,8 @@ for repindx = 1:Nrep
     params_std_pred = sqrt(diag(params_var));
     param_std_pred = params_std_pred(ParamNum)
 
+    disp('')
+    
 
     %% Append results
 
@@ -390,107 +393,109 @@ grid on
 
 
 %% Function for generating sequence distributions
-
-function SequenceDists = calculateSequenceDists(model_name, model_params, scheme, opts)
-
-    arguments
-        model_name % Name of dMRI signal model
-        model_params % Parameter values for model (in order specified in dMRI_model)
-        scheme % sequence parameters
-
-        opts.T2 % T2 value
-        opts.noise_std % Noise standard deviation (as fraction of TE=0 b=0 signal)
-    
-    end
-
-    nscheme = length(scheme);
-    T2 = opts.T2;
-    noise_std = opts.noise_std;
-
-
-    % Generate distributions for each sequence
-    SequenceDists = struct();
-    
-    for schmindx = 1:nscheme
-    
-        delta = scheme(schmindx).delta;
-        DELTA = scheme(schmindx).DELTA;
-        bval = scheme(schmindx).bval;
-        TE = scheme(schmindx).TE;
-        N0 = scheme(schmindx).N0;
-        Nb = (scheme(schmindx).Nb)*N0;
-    
-    
-        % == b=0 signal distribution
-    
-        % Noise-free
-        b0signal = exp(-TE/T2);
-    
-        % Standard deviation
-        b0std = noise_std/sqrt(N0);
-    
-        b0dist = makedist('Rician', s=b0signal, sigma = b0std );
-    
-    
-        % == b>0 signal distribution
-    
-        % Noise-free 
-        bsignal = b0signal*dMRI_model(model_name, model_params, [bval, delta, DELTA]);
-    
-        % Standard deviation
-        bstd = noise_std/sqrt(Nb);
-    
-        bdist = makedist('Rician', s=bsignal, sigma = bstd );
-    
-    
-        SequenceDists(schmindx).('b0dist') = b0dist;
-        SequenceDists(schmindx).('bdist') = bdist;
-     
-    
-    end
-
-
-end
+% 
+% function SequenceDists = calculateSequenceDists(model_name, model_params, scheme, opts)
+% 
+%     arguments
+%         model_name % Name of dMRI signal model
+%         model_params % Parameter values for model (in order specified in dMRI_model)
+%         scheme % sequence parameters
+% 
+%         opts.T2 % T2 value
+%         opts.noise_std % Noise standard deviation (as fraction of TE=0 b=0 signal)
+% 
+%     end
+% 
+%     nscheme = length(scheme);
+%     T2 = opts.T2;
+%     noise_std = opts.noise_std;
+% 
+% 
+%     % Generate distributions for each sequence
+%     SequenceDists = struct();
+% 
+%     for schmindx = 1:nscheme
+% 
+%         delta = scheme(schmindx).delta;
+%         DELTA = scheme(schmindx).DELTA;
+%         bval = scheme(schmindx).bval;
+%         TE = scheme(schmindx).TE;
+%         N0 = scheme(schmindx).N0;
+%         Nb = (scheme(schmindx).Nb)*N0;
+% 
+% 
+%         % == b=0 signal distribution
+% 
+%         % Noise-free
+%         b0signal = exp(-TE/T2);
+% 
+%         % Standard deviation
+%         b0std = noise_std/sqrt(N0);
+% 
+%         b0dist = makedist('Rician', s=b0signal, sigma = b0std );
+% 
+% 
+%         % == b>0 signal distribution
+% 
+%         % Noise-free 
+%         bsignal = b0signal*dMRI_model(model_name, model_params, [bval, delta, DELTA]);
+% 
+%         % Standard deviation
+%         bstd = noise_std/sqrt(Nb);
+% 
+%         bdist = makedist('Rician', s=bsignal, sigma = bstd );
+% 
+% 
+%         SequenceDists(schmindx).('b0dist') = b0dist;
+%         SequenceDists(schmindx).('bdist') = bdist;
+% 
+% 
+%     end
+% 
+% 
+% end
 
 
 
 %% Function for diffusion model fitting
 
-function [params, resnorm] = fitting_func(signals, scheme, opts)
-
-    arguments
-        signals 
-        scheme
-        opts.modelname
-        opts.fittingtechnique
-        opts.beta0
-        opts.lb
-        opts.ub
-        opts.lambda = 0
-        opts.ADClogfit = false
-    end
-
-    Nparam = length(opts.beta0);
-
-    Y = reshape(signals, [1,1,1,length(signals)]);
-
-    outputs = dMRI_model_fit( ...
-        opts.modelname, ...
-        Y, ...
-        scheme, ...
-        fittingtechnique=opts.fittingtechnique,...
-        beta0=opts.beta0,...
-        lb=opts.lb,...
-        ub=opts.ub,...
-        lambda=opts.lambda,...
-        ADClogfit=opts.ADClogfit);
-
-    f = fields(outputs);
-    nf = length(f);
-    params = zeros(nf, 1);
-    for indx = 1:nf
-        params(indx) = outputs.(f{indx});
-    end
-
-
-end
+% function [params, resnorm] = fitting_func(signals, scheme, opts)
+% 
+%     arguments
+%         signals 
+%         scheme
+%         opts.modelname
+%         opts.fittingtechnique
+%         opts.beta0
+%         opts.lb
+%         opts.ub
+%         opts.lambda = 0
+%         opts.return_jacobian = false
+%         opts.ADClogfit = false
+%     end
+% 
+%     Nparam = length(opts.beta0);
+% 
+%     Y = reshape(signals, [1,1,1,length(signals)]);
+% 
+%     outputs = dMRI_model_fit( ...
+%         opts.modelname, ...
+%         Y, ...
+%         scheme, ...
+%         fittingtechnique=opts.fittingtechnique,...
+%         beta0=opts.beta0,...
+%         lb=opts.lb,...
+%         ub=opts.ub,...
+%         lambda=opts.lambda,...
+%         return_jacobian = opts.return_jacobian,...
+%         ADClogfit=opts.ADClogfit);
+% 
+%     f = fields(outputs);
+%     nf = length(f);
+%     params = zeros(nf, 1);
+%     for indx = 1:nf
+%         params(indx) = outputs.(f{indx});
+%     end
+% 
+% 
+% end
